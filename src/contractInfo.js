@@ -10,7 +10,7 @@
  */
 
 // ── Paste your deployed contract address here ──
-export const CONTRACT_ADDRESS = "0xPASTE_DEPLOYED_ADDRESS_HERE";
+export const CONTRACT_ADDRESS = "0x6F3905E00CBF5f5005F0ad50006ea6D9a22Aae28";
 
 // ── Contract ABI ──
 export const CONTRACT_ABI = [

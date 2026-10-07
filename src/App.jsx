@@ -1,6 +1,55 @@
 import { useState, useEffect, useCallback } from "react";
 import { BrowserProvider, Contract, parseEther, formatEther } from "ethers";
+import { createWeb3Modal, defaultConfig, useWeb3Modal, useWeb3ModalAccount, useWeb3ModalProvider } from '@web3modal/ethers/react';
 import { CONTRACT_ADDRESS, CONTRACT_ABI } from "./contractInfo";
+
+/* ════════════════════════════════════════════════════
+   Web3Modal / WalletConnect Configuration
+   ════════════════════════════════════════════════════ */
+// 1. Get projectId at https://cloud.walletconnect.com (Using a demo ID for the experiment)
+const projectId = '9c38d4aaab569845aea606c51772a940';
+
+// 2. Set networks
+const sepolia = {
+  chainId: 11155111,
+  name: 'Sepolia',
+  currency: 'ETH',
+  explorerUrl: 'https://sepolia.etherscan.io',
+  rpcUrl: 'https://rpc.sepolia.org'
+};
+
+const mainnet = {
+  chainId: 1,
+  name: 'Ethereum',
+  currency: 'ETH',
+  explorerUrl: 'https://etherscan.io',
+  rpcUrl: 'https://cloudflare-eth.com'
+};
+
+// 3. Create a metadata object
+const metadata = {
+  name: 'TravelFi DApp',
+  description: 'Decentralized Travel Booking and Savings Platform',
+  url: 'https://travelfi.dapp', // origin must match your domain & subdomain
+  icons: ['https://avatars.githubusercontent.com/u/37784886']
+};
+
+// 4. Create Ethers config
+const ethersConfig = defaultConfig({
+  metadata,
+  enableEIP6963: true, // True by default (Injected wallets like MetaMask)
+  enableInjected: true, // True by default
+  enableCoinbase: true, // True by default
+});
+
+// 5. Create a Web3Modal instance
+createWeb3Modal({
+  ethersConfig,
+  chains: [sepolia, mainnet],
+  projectId,
+  enableAnalytics: true, // Optional
+  themeMode: 'dark' // Matches our UI
+});
 
 /* ════════════════════════════════════════════════════
    Helper — shorten Ethereum address for display
@@ -13,9 +62,6 @@ function shortAddr(addr) {
 const STATUS_LABELS = ["Pending", "Completed", "Cancelled"];
 const STATUS_CLASSES = ["pending", "completed", "cancelled"];
 
-/* ════════════════════════════════════════════════════
-   Toast Notifications
-   ════════════════════════════════════════════════════ */
 function ToastContainer({ toasts, onRemove }) {
   return (
     <div className="toast-container">
@@ -37,9 +83,10 @@ function ToastContainer({ toasts, onRemove }) {
    Main App Component
    ════════════════════════════════════════════════════ */
 function App() {
-  // ── Wallet State ──
-  const [account, setAccount] = useState(null);
-  const [networkName, setNetworkName] = useState("");
+  // ── Web3Modal Hooks (Experiment 2) ──
+  const { open } = useWeb3Modal();
+  const { address, chainId, isConnected } = useWeb3ModalAccount();
+  const { walletProvider } = useWeb3ModalProvider();
 
   // ── Tab State ──
   const [activeTab, setActiveTab] = useState("booking");
@@ -63,13 +110,9 @@ function App() {
   const [travelGoal, setTravelGoal] = useState("");
   const [currentGoal, setCurrentGoal] = useState(0);
 
-  // ── Loading ──
+  // ── Loading & Toasts ──
   const [loading, setLoading] = useState(false);
-
-  // ── Toasts ──
   const [toasts, setToasts] = useState([]);
-
-  // ── Booking History ──
   const [bookingHistory, setBookingHistory] = useState([]);
 
   /* ──────────────────────────────────────────
@@ -89,11 +132,11 @@ function App() {
   }, []);
 
   /* ──────────────────────────────────────────
-     Get Contract Instance
+     Get Contract Instance (Using WalletConnect Provider)
      ────────────────────────────────────────── */
   async function getContract(needsSigner = false) {
-    if (!window.ethereum) throw new Error("MetaMask not installed");
-    const provider = new BrowserProvider(window.ethereum);
+    if (!isConnected || !walletProvider) throw new Error("Wallet not connected");
+    const provider = new BrowserProvider(walletProvider);
     const signerOrProvider = needsSigner
       ? await provider.getSigner()
       : provider;
@@ -101,43 +144,11 @@ function App() {
   }
 
   /* ──────────────────────────────────────────
-     Connect Wallet
-     ────────────────────────────────────────── */
-  async function connectWallet() {
-    if (!window.ethereum) {
-      addToast("Please install MetaMask to use TravelFi!", "error");
-      return;
-    }
-    try {
-      setLoading(true);
-      const provider = new BrowserProvider(window.ethereum);
-      const accounts = await provider.send("eth_requestAccounts", []);
-      setAccount(accounts[0]);
-
-      const network = await provider.getNetwork();
-      const chainNames = {
-        1n: "Ethereum Mainnet",
-        5n: "Goerli",
-        11155111n: "Sepolia",
-        137n: "Polygon",
-        80001n: "Mumbai",
-      };
-      setNetworkName(chainNames[network.chainId] || `Chain ${network.chainId}`);
-
-      addToast("Wallet connected successfully!", "success");
-      await fetchStats();
-    } catch (err) {
-      addToast("Failed to connect wallet: " + err.message, "error");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  /* ──────────────────────────────────────────
      Fetch Contract Stats
      ────────────────────────────────────────── */
   const fetchStats = useCallback(async () => {
     try {
+      if (!isConnected) return;
       const contract = await getContract(false);
       const count = await contract.getBookingCount();
       const balance = await contract.getContractBalance();
@@ -146,7 +157,7 @@ function App() {
     } catch {
       // Contract may not be deployed yet
     }
-  }, []);
+  }, [isConnected, walletProvider]);
 
   /* ──────────────────────────────────────────
      Create Booking
@@ -262,6 +273,7 @@ function App() {
      ────────────────────────────────────────── */
   const fetchAllBookings = useCallback(async () => {
     try {
+      if (!isConnected) return;
       const contract = await getContract(false);
       const count = await contract.getBookingCount();
       const results = [];
@@ -284,11 +296,10 @@ function App() {
     } catch {
       // Contract may not be deployed
     }
-  }, []);
+  }, [isConnected, walletProvider]);
 
   /* ──────────────────────────────────────────
      Savings Vault — Simulated Handlers
-     (In production, these would call an ERC-4626 vault contract)
      ────────────────────────────────────────── */
   function handleVaultDeposit() {
     if (!vaultDeposit || Number(vaultDeposit) <= 0) {
@@ -327,32 +338,11 @@ function App() {
      Effects
      ────────────────────────────────────────── */
   useEffect(() => {
-    if (account) {
+    if (isConnected) {
       fetchStats();
       fetchAllBookings();
     }
-  }, [account, fetchStats, fetchAllBookings]);
-
-  // Listen for account/network changes
-  useEffect(() => {
-    if (!window.ethereum) return;
-    const handleAccountsChanged = (accounts) => {
-      if (accounts.length === 0) {
-        setAccount(null);
-      } else {
-        setAccount(accounts[0]);
-      }
-    };
-    const handleChainChanged = () => window.location.reload();
-
-    window.ethereum.on("accountsChanged", handleAccountsChanged);
-    window.ethereum.on("chainChanged", handleChainChanged);
-
-    return () => {
-      window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
-      window.ethereum.removeListener("chainChanged", handleChainChanged);
-    };
-  }, []);
+  }, [isConnected, fetchStats, fetchAllBookings]);
 
   /* ──────────────────────────────────────────
      Compute Vault Progress
@@ -362,11 +352,18 @@ function App() {
       ? Math.min(100, Math.round((parseFloat(vaultBalance) / currentGoal) * 100))
       : 0;
 
+  const chainNames = {
+    "1": "Ethereum Mainnet",
+    "11155111": "Sepolia Testnet",
+  };
+  const displayNetwork = chainId ? chainNames[chainId.toString()] || `Chain ID ${chainId}` : "Not Connected";
+
   /* ════════════════════════════════════════════════════
      RENDER
      ════════════════════════════════════════════════════ */
   return (
     <div className="app">
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
       {/* ── Navbar ── */}
       <header className="navbar" id="navbar">
         <div className="navbar__brand">
@@ -375,43 +372,29 @@ function App() {
             <div className="navbar__logo">TravelFi</div>
             <div className="navbar__network">
               <span className="navbar__network-dot" />
-              {networkName || "Not Connected"} | Experiment 1
+              {displayNetwork} | Experiment 2 (WalletConnect)
             </div>
           </div>
         </div>
         <div className="navbar__actions">
-          {account && (
+          {isConnected && (
             <span className="navbar__address" id="wallet-address">
-              {shortAddr(account)}
+              {shortAddr(address)}
             </span>
           )}
-          {!account ? (
-            <button
-              className="btn btn--wallet"
-              onClick={connectWallet}
-              disabled={loading}
-              id="connect-wallet-btn"
-            >
-              {loading ? <span className="spinner" /> : "🦊"} Connect Wallet
-            </button>
-          ) : (
-            <button
-              className="btn btn--ghost"
-              onClick={() => {
-                setAccount(null);
-                setNetworkName("");
-                addToast("Wallet disconnected", "info");
-              }}
-              id="disconnect-btn"
-            >
-              Disconnect
-            </button>
-          )}
+          {/* EXPERIMENT 2: Web3Modal button replacing direct MetaMask connection */}
+          <button
+            className="btn btn--wallet"
+            onClick={() => open()}
+            id="connect-wallet-btn"
+          >
+            {isConnected ? "💳 Manage Wallet" : "🦊 Connect WalletConnect / MetaMask"}
+          </button>
         </div>
       </header>
 
       {/* ── Not Connected Hero ── */}
-      {!account && (
+      {!isConnected && (
         <section className="hero">
           <h1 className="hero__title">
             Decentralized Travel Booking
@@ -424,18 +407,16 @@ function App() {
           </p>
           <button
             className="btn btn--wallet btn--lg"
-            onClick={connectWallet}
-            disabled={loading}
+            onClick={() => open()}
             id="hero-connect-btn"
           >
-            {loading ? <span className="spinner" /> : "🦊"} Connect MetaMask to
-            Get Started
+            Connect with WalletConnect / MetaMask
           </button>
         </section>
       )}
 
       {/* ── Connected Dashboard ── */}
-      {account && (
+      {isConnected && (
         <>
           {/* Stats Row */}
           <div className="stats-grid">
@@ -617,8 +598,8 @@ function App() {
                       <span className="booking-details__value">
                         {bookingDetails.createdAt > 0
                           ? new Date(
-                              bookingDetails.createdAt * 1000
-                            ).toLocaleString()
+                            bookingDetails.createdAt * 1000
+                          ).toLocaleString()
                           : "—"}
                       </span>
                     </div>
@@ -654,7 +635,6 @@ function App() {
           {/* ═══ TAB: Savings Vault ═══ */}
           {activeTab === "vault" && (
             <div className="section-grid">
-              {/* Vault Overview */}
               <div className="card" id="vault-overview-card">
                 <div className="card__header">
                   <div>
@@ -703,7 +683,6 @@ function App() {
                 )}
               </div>
 
-              {/* Vault Actions */}
               <div className="card" id="vault-actions-card">
                 <div className="card__header">
                   <h2 className="card__title">💸 Vault Actions</h2>
@@ -795,56 +774,30 @@ function App() {
                 </div>
               ) : (
                 <div className="booking-history">
-                  {/* Header */}
-                  <div
-                    className="booking-history__item"
-                    style={{
-                      color: "var(--text-muted)",
-                      fontSize: "var(--font-size-xs)",
-                      fontWeight: 600,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.05em",
-                    }}
-                  >
-                    <span>ID</span>
-                    <span>Provider</span>
-                    <span style={{ textAlign: "right" }}>Amount</span>
-                    <span>Status</span>
-                    <span>Date</span>
-                  </div>
                   {bookingHistory.map((b) => (
-                    <div
-                      key={b.id}
-                      className="booking-history__item"
-                      onClick={() => {
-                        setLookupId(String(b.id));
-                        setActiveTab("booking");
-                        handleViewBooking();
-                      }}
-                      style={{ cursor: "pointer" }}
-                    >
-                      <span className="booking-history__id">#{b.id}</span>
-                      <span className="booking-history__addr">
-                        {shortAddr(b.provider)}
-                      </span>
-                      <span className="booking-history__amount">
-                        {b.amount} ETH
-                      </span>
-                      <span
-                        className={`status-badge status-badge--${STATUS_CLASSES[b.status]}`}
-                      >
-                        {STATUS_LABELS[b.status]}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: "var(--font-size-xs)",
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        {b.createdAt > 0
-                          ? new Date(b.createdAt * 1000).toLocaleDateString()
-                          : "—"}
-                      </span>
+                    <div key={b.id} className="booking-history__item">
+                      <div className="booking-history__header">
+                        <span className="booking-history__id">#{b.id}</span>
+                        <span
+                          className={`status-badge status-badge--${STATUS_CLASSES[b.status]}`}
+                        >
+                          {STATUS_LABELS[b.status]}
+                        </span>
+                      </div>
+                      <div className="booking-history__body">
+                        <div>
+                          <div className="booking-history__label">Traveler</div>
+                          <div className="booking-history__value">{shortAddr(b.traveler)}</div>
+                        </div>
+                        <div>
+                          <div className="booking-history__label">Provider</div>
+                          <div className="booking-history__value">{shortAddr(b.provider)}</div>
+                        </div>
+                        <div>
+                          <div className="booking-history__label">Amount</div>
+                          <div className="booking-history__value">{b.amount} ETH</div>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -853,9 +806,6 @@ function App() {
           )}
         </>
       )}
-
-      {/* Toast Notifications */}
-      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );
 }

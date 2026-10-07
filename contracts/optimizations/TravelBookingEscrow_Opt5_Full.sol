@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+// Optimization 5 (on top of Step 4, final version): unchecked blocks around arithmetic
+// that is provably safe (bookingCount increment can't overflow uint256 in practice),
+// and ReentrancyGuard pattern (state changes before external call) for security.
+contract TravelBookingEscrow_Step5_Full {
+    address public immutable owner;
+
+    uint256 public bookingCount;
+
+    enum BookingStatus { Pending, Completed, Cancelled }
+
+    struct Booking {
+        uint256 id;
+        address traveler;
+        address provider;
+        uint256 amount;
+        BookingStatus status;
+        uint256 createdAt;
+    }
+
+    mapping(uint256 => Booking) public bookings;
+
+    error ZeroDeposit();
+    error InvalidProvider();
+    error SelfBooking();
+    error BookingNotFound();
+    error BookingNotPending();
+    error NotTraveler();
+    error NotAuthorized();
+    error TransferFailed();
+
+    event BookingCreated(
+        uint256 indexed bookingId,
+        address indexed traveler,
+        address indexed provider,
+        uint256 amount
+    );
+    event BookingCompleted(uint256 indexed bookingId, address indexed provider, uint256 amount);
+    event BookingCancelled(uint256 indexed bookingId, address indexed traveler, uint256 amount);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function createBooking(address provider) external payable {
+        if (msg.value == 0) revert ZeroDeposit();
+        if (provider == address(0)) revert InvalidProvider();
+        if (provider == msg.sender) revert SelfBooking();
+
+        uint256 _bookingCount;
+        unchecked {
+            // Safe: bookingCount can never realistically reach 2^256.
+            _bookingCount = bookingCount + 1;   // <-- unchecked
+        }
+        bookingCount = _bookingCount;
+
+        bookings[_bookingCount] = Booking({
+            id: _bookingCount,
+            traveler: msg.sender,
+            provider: provider,
+            amount: msg.value,
+            status: BookingStatus.Pending,
+            createdAt: block.timestamp
+        });
+
+        emit BookingCreated(_bookingCount, msg.sender, provider, msg.value);
+    }
+
+    function confirmCompletion(uint256 bookingId) external {
+        Booking storage booking = bookings[bookingId];
+
+        uint256 _id = booking.id;
+        address _traveler = booking.traveler;
+        address _provider = booking.provider;
+        uint256 _amount = booking.amount;
+
+        if (_id == 0) revert BookingNotFound();
+        if (booking.status != BookingStatus.Pending) revert BookingNotPending();
+        if (msg.sender != _traveler) revert NotTraveler();
+
+        // Checks-Effects-Interactions pattern: state change BEFORE external call
+        booking.status = BookingStatus.Completed;
+        emit BookingCompleted(bookingId, _provider, _amount);
+
+        // External call last (reentrancy safe)
+        (bool success, ) = payable(_provider).call{value: _amount}("");
+        if (!success) revert TransferFailed();
+    }
+
+    function cancelBooking(uint256 bookingId) external {
+        Booking storage booking = bookings[bookingId];
+
+        uint256 _id = booking.id;
+        address _traveler = booking.traveler;
+        uint256 _amount = booking.amount;
+
+        if (_id == 0) revert BookingNotFound();
+        if (booking.status != BookingStatus.Pending) revert BookingNotPending();
+        if (msg.sender != _traveler && msg.sender != owner) revert NotAuthorized();
+
+        // Checks-Effects-Interactions pattern: state change BEFORE external call
+        booking.status = BookingStatus.Cancelled;
+        emit BookingCancelled(bookingId, _traveler, _amount);
+
+        // External call last (reentrancy safe)
+        (bool success, ) = payable(_traveler).call{value: _amount}("");
+        if (!success) revert TransferFailed();
+    }
+
+    function getBookingDetails(uint256 bookingId)
+        external
+        view
+        returns (Booking memory)
+    {
+        if (bookings[bookingId].id == 0) revert BookingNotFound();
+        return bookings[bookingId];
+    }
+
+    function getBookingCount() external view returns (uint256) {
+        return bookingCount;
+    }
+
+    function getContractBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+}
